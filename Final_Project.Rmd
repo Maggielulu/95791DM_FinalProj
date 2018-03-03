@@ -1,0 +1,144 @@
+---
+title: "Final_Project: Customer Lifetime Value"
+author: "Team Binalytics: Maggie Lu (yaol4) and Wenyan Zhao (wenyanz)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#load library
+library(dplyr)
+library(knitr)
+library(plyr)
+library(ggplot2)
+library(leaps)
+library(glmnet)
+library(caret)
+library(pROC)
+library(tidyverse)
+library(klaR)
+library(rpart)
+library(randomForest)
+#Load data
+ltv = read.csv(file = 'ltv.csv', header = TRUE)
+#suppress warnings
+```
+
+### Task 1: Attrition Model
+> To build an attrition model, first we want to clean up the data a bit to aggregate the information of each customer within a specifically defined timeframe. Here we would like to define the time interval to be 1 month-- partially because it is easier to aggregate, and therefore we define the near future to be the next month, in accordance with our dataframe. We then split the data into a test set and a training set, and then determines which of the variables we want to look into using subset selection criterias-- AIC/BIC. Finally, we look into different classfication models-- logistic regression, LDA and random forest to see which one has the best accuracy and specificity
+
+#### Pre-processing the Data
+```{r message=FALSE, warning=FALSE}
+
+#Create a new data frame capturing the end state and the time the customer's in the system
+#First of all transform the data: 
+
+#df <- ltv %>%
+#  group_by(id) %>%
+#  mutate(duration = ifelse(as.Date(date)==min(as.Date(date)),1,ceiling(((as.Date(date)-min(as.Date(date))))/30)))
+ltv$month = format(as.Date(ltv$date), "%Y/%m")
+#Then summarize the dataframe through a 1-month interval
+df = ddply(ltv,c("id","gender","month"),summarize, cancelled = max(status), days.count = as.numeric(max(as.Date(date))-min(as.Date(date))),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
+
+df.new = ddply(df,.(id),transform,csum.days= cumsum(days.count))
+#df.new = ddply(df,.(id),transform,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
+
+df.new$month = round(df.new$csum.days/30)
+#df.new$month = ifelse(round(df.new$csum.days/30)==0,1,round(df.new$csum.days/30))
+
+df.new = ddply(df.new,c("id","gender","month"),summarize,cancelled = max(cancelled),total.days= sum(days.count), total.page = sum(page.visited),total.time = sum(time.spent), total.enter = sum(entered.time),total.complete = sum(cmplt.time), holiday = max(holiday))
+df.new$cancelled = mapvalues(df.new$cancelled, from=c('0','1','2'),to=c(0,0,1))
+df.new = ddply(df.new,.(id),transform,csum.days= cumsum(total.days),csum.page=cumsum(total.page),csum.onsite= cumsum(total.time), csum.entered = cumsum(total.enter), csum.cmplt.time = cumsum(total.complete))
+#df.new = ddply(df.new,c("id","month"),summarize,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
+
+ltv.cleaned = df.new[,c(2,3,4,10,11,12,13,14,15)]
+```
+
+#### Processing and Methods
+```{r message=FALSE, warning=FALSE}
+#First split the dataset into a training set and a test set
+data(ltv.cleaned)
+## 70% of the sample size
+smp_size <- floor(0.7 * nrow(ltv.cleaned))
+## set the seed to make your partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(ltv.cleaned)), size = smp_size)
+ltv.train <- ltv.cleaned[train_ind, ]
+ltv.test <- ltv.cleaned[-train_ind, ]
+
+#Best subset
+df.subset <- regsubsets(cancelled ~ .,
+               data = ltv.train,
+               nbest = 1,    # 1 best model for each number of predictors
+               nvmax = NULL,    # NULL for no limit on number of variables
+               method = "exhaustive", really.big = TRUE)
+df.subset.sum = summary(df.subset)
+df.subset.sum
+
+#AIC
+which.min(df.subset.sum$cp)
+names(coef(df.subset,which.min(df.subset.sum$cp)))
+ 
+#BIC
+which.min(df.subset.sum$bic)
+names(coef(df.subset,which.min(df.subset.sum$bic)))
+```
+> This makes sense; csum.page and csum.onsite are highly correlated (see Task2) so that it is expected to have only one of the two passing the AIC/BIC criteria. We will then use several models to determine the fit.
+
+#### Validation and Metrics
+```{r message=FALSE, warning=FALSE}
+#Method 1: Logistic Regressions
+glm.fit = glm(cancelled ~ .,family = binomial(), data = ltv.train)
+#fit the prediction to the test data, and transform the test data with a cut off of 0.5 to see the confusion matrix for fitting
+test.pred.prec = predict(glm.fit,ltv.test,type='response')
+test.pred = ifelse(test.pred.prec < 0.5,0,1)
+confusionMatrix(data = test.pred, reference = ltv.test$cancelled)
+#ROC plot
+roc.obj = roc(ltv.test$cancelled, test.pred.prec)
+plot.roc(roc.obj, legacy.axes=TRUE)
+```
+> 
+
+```{r message=FALSE, warning=FALSE}
+#Method 2: Naive Bayes
+#suppress warnings
+options(warn=-1)
+ltv.train$cancelled <- factor(ltv.train$cancelled)
+ltv.train.nb <- NaiveBayes(cancelled ~., data = ltv.train, usekernel = TRUE)
+confusionMatrix(predict(ltv.train.nb, ltv.test, type="class")$class, ltv.test$cancelled)
+```
+
+```{r message=FALSE, warning=FALSE}
+#Method 3: Random Forest
+ltv.rf = randomForest(cancelled ~ .,data=ltv.train, importance=TRUE)
+print(ltv.rf)
+
+pred = predict(ltv.rf, ltv.test)
+confusionMatrix(pred, ltv.test$cancelled)
+```
+
+### Task 2: Lifetime Value of A customer
+
+```{r}
+
+
+```
+
+```{r}
+
+
+```
+
+### Task 3: Customer Segmentation Scheme
+#### Processing and Methods
+```{r}
+
+
+```
+#### Validation and Metrics
+```{r}
+
+
+```
+
+### Summary of Findings
