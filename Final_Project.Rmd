@@ -83,7 +83,7 @@ names(coef(df.subset,which.min(df.subset.sum$cp)))
 which.min(df.subset.sum$bic)
 names(coef(df.subset,which.min(df.subset.sum$bic)))
 ```
-> This makes sense; csum.page and csum.onsite are highly correlated (see Task2) so that it is expected to have only one of the two passing the AIC/BIC criteria. We will then use several models to determine the fit.
+> This makes sense. We will then use several models to determine the fit.
 
 #### Validation and Metrics
 ```{r message=FALSE, warning=FALSE}
@@ -91,7 +91,7 @@ names(coef(df.subset,which.min(df.subset.sum$bic)))
 glm.fit = glm(cancelled ~ .,family = binomial(), data = ltv.train)
 #fit the prediction to the test data, and transform the test data with a cut off of 0.5 to see the confusion matrix for fitting
 test.pred.prec = predict(glm.fit,ltv.test,type='response')
-test.pred = ifelse(test.pred.prec < 0.5,0,1)
+test.pred = ifelse(test.pred.prec < 0.4,0,1)
 confusionMatrix(data = test.pred, reference = ltv.test$cancelled)
 #ROC plot
 roc.obj = roc(ltv.test$cancelled, test.pred.prec)
@@ -120,8 +120,14 @@ confusionMatrix(pred, ltv.test$cancelled)
 ### Task 2: Lifetime Value of A customer
 
 ```{r}
-
-
+#this is user-level behavior that we are trying to predict, therefore group the data by user_id
+df.2 = ddply(ltv,c("id","gender"),summarize, cancelled = max(status), days.count = as.numeric(max(as.Date(date))-min(as.Date(date))),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
+df.2$cancelled = mapvalues(df.2$cancelled, from=c('0','1','2'),to=c(0,0,1))
+df.2$page.pm = df.2$page.visited/df.2$days.count*30
+df.2$time.pm = df.2$time.spent/df.2$days.count*30
+df.2$entered.pm = df.2$entered.time/df.2$days.count*30
+df.2$cmplt.pm = df.2$cmplt.time/df.2$days.count*30
+ltv.2 = df.2[,c(2,3,4,9,10,11,12,13)]
 ```
 
 ```{r}
