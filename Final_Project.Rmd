@@ -19,6 +19,7 @@ library(tidyverse)
 library(klaR)
 library(rpart)
 library(randomForest)
+library(lubridate)
 #Load data
 ltv = read.csv(file = 'ltv.csv', header = TRUE)
 #suppress warnings
@@ -120,14 +121,28 @@ confusionMatrix(pred, ltv.test$cancelled)
 ### Task 2: Lifetime Value of A customer
 
 ```{r}
+#first, find about customer behavior for a year for every customer
+#then the y value would be the one that extend beyond the one year mark until the churn time. 
+
 #this is user-level behavior that we are trying to predict, therefore group the data by user_id
-df.2 = ddply(ltv,c("id","gender"),summarize, cancelled = max(status), days.count = as.numeric(max(as.Date(date))-min(as.Date(date))),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
-df.2$cancelled = mapvalues(df.2$cancelled, from=c('0','1','2'),to=c(0,0,1))
-df.2$page.pm = df.2$page.visited/df.2$days.count*30
-df.2$time.pm = df.2$time.spent/df.2$days.count*30
-df.2$entered.pm = df.2$entered.time/df.2$days.count*30
-df.2$cmplt.pm = df.2$cmplt.time/df.2$days.count*30
-ltv.2 = df.2[,c(2,3,4,9,10,11,12,13)]
+df.2 = ddply(ltv,c("id","gender"),summarize, cancelled = max(status), days.count = max(as.Date(date))-min(as.Date(date)),days.left = as.Date("2014-12-31")- max(as.Date(date)),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
+#filter out the customers who have bene using this service for at least a year-- these are the customers we want to measure value for
+df2.filtered = df.2[df.2$days.count>365,]
+df2.filtered = ltv %>%
+      filter(id %in% df2.filtered$id)
+
+df2.filtered$cancelled = mapvalues(df2.filtered$cancelled, from=c('0','1','2'),to=c(0,0,1))
+#df.new$month = ifelse(round(df.new$csum.days/30)==0,1,round(df.new$csum.days/30))
+df2.filtered$days.count = ifelse(df2.filtered$cancelled==0,df2.filtered$days.count+df2.filtered$days.left,df2.filtered$days.count)
+
+df2.filtered$page.py = df2.filtered$page.visited/as.numeric(df2.filtered$days.count)*365
+df2.filtered$time.py = df2.filtered$time.spent/as.numeric(df2.filtered$days.count)*365
+df2.filtered$entered.py = df2.filtered$entered.time/as.numeric(df2.filtered$days.count)*365
+df2.filtered$cmplt.py = df2.filtered$cmplt.time/as.numeric(df2.filtered$days.count)*365
+df2.filtered$hd.py = df2.filtered$holiday/as.numeric(df2.filtered$days.count)*365
+df2.filtered$ltv.obs = (as.numeric(df2.filtered$days.count)-365)/as.numeric(df2.filtered$days.count)
+
+df2.final = df2.filtered[,c(2,10,11,12,13,14,15,16)]
 ```
 
 ```{r}
