@@ -26,7 +26,7 @@ ltv = read.csv(file = 'ltv.csv', header = TRUE)
 ```
 
 ### Task 1: Attrition Model
-> To build an attrition model, first we want to clean up the data a bit to aggregate the information of each customer within a specifically defined timeframe. Here we would like to define the time interval to be 1 month-- partially because it is easier to aggregate, and therefore we define the near future to be the next month, in accordance with our dataframe. We then split the data into a test set and a training set, and then determines which of the variables we want to look into using subset selection criterias-- AIC/BIC. Finally, we look into different classfication models-- logistic regression, LDA and random forest to see which one has the best accuracy and specificity
+> To build an attrition model, first we want to clean up the data a bit to aggregate the information of each customer within a specifically defined timeframe. Here we would like to define the time interval to be 1 month-- partially because it is easier to aggregate, and therefore we define the near future to be the next month, in accordance with our dataframe. We then split the data into a test set and a training set, and then determines which of the variables we want to look into using subset selection criterias-- AIC/BIC. Finally, we look into different classfication models-- logistic regression, Naive Bayes and random forest to see which one has the best accuracy and specificity
 
 #### Pre-processing the Data
 ```{r message=FALSE, warning=FALSE}
@@ -34,23 +34,15 @@ ltv = read.csv(file = 'ltv.csv', header = TRUE)
 #Create a new data frame capturing the end state and the time the customer's in the system
 #First of all transform the data: 
 
-#df <- ltv %>%
-#  group_by(id) %>%
-#  mutate(duration = ifelse(as.Date(date)==min(as.Date(date)),1,ceiling(((as.Date(date)-min(as.Date(date))))/30)))
-ltv$month = format(as.Date(ltv$date), "%Y/%m")
-#Then summarize the dataframe through a 1-month interval
-df = ddply(ltv,c("id","gender","month"),summarize, cancelled = max(status), days.count = as.numeric(max(as.Date(date))-min(as.Date(date))),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
+df <- ltv %>%
+  group_by(id) %>%
+dplyr::  mutate(duration = ifelse(as.Date(date)==min(as.Date(date)),1,ceiling(((as.Date(date)-min(as.Date(date))))/30)))
 
-df.new = ddply(df,.(id),transform,csum.days= cumsum(days.count))
-#df.new = ddply(df,.(id),transform,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
+df2 = ddply(df,c("id","gender","duration"),summarize, cancelled = max(status), days.count = length(date), page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
 
-df.new$month = round(df.new$csum.days/30)
-#df.new$month = ifelse(round(df.new$csum.days/30)==0,1,round(df.new$csum.days/30))
+df.new = ddply(df2,.(id),transform,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
 
-df.new = ddply(df.new,c("id","gender","month"),summarize,cancelled = max(cancelled),total.days= sum(days.count), total.page = sum(page.visited),total.time = sum(time.spent), total.enter = sum(entered.time),total.complete = sum(cmplt.time), holiday = max(holiday))
 df.new$cancelled = mapvalues(df.new$cancelled, from=c('0','1','2'),to=c(0,0,1))
-df.new = ddply(df.new,.(id),transform,csum.days= cumsum(total.days),csum.page=cumsum(total.page),csum.onsite= cumsum(total.time), csum.entered = cumsum(total.enter), csum.cmplt.time = cumsum(total.complete))
-#df.new = ddply(df.new,c("id","month"),summarize,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
 
 ltv.cleaned = df.new[,c(2,3,4,10,11,12,13,14,15)]
 ```
@@ -119,6 +111,13 @@ confusionMatrix(pred, ltv.test$cancelled)
 ```
 
 ### Task 2: Lifetime Value of A customer
+```{r}
+#another way to aggregate the data
+df2.test  = ddply(ltv,c("id"),mutate,yr_status = ifelse(as.Date(date)<=min(as.Date(date))+365,"<1yr",">1yr"))
+df2.test = ddply(df2.test,c("id","gender","yr_status"),summarize, cancelled = max(status), days.count = max(as.Date(date))-min(as.Date(date)),days.left = as.Date("2014-12-31")- max(as.Date(date)),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
+
+```
+
 
 ```{r}
 #first, find about customer behavior for a year for every customer
@@ -128,12 +127,12 @@ confusionMatrix(pred, ltv.test$cancelled)
 df.2 = ddply(ltv,c("id","gender"),summarize, cancelled = max(status), days.count = max(as.Date(date))-min(as.Date(date)),days.left = as.Date("2014-12-31")- max(as.Date(date)),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
 #filter out the customers who have bene using this service for at least a year-- these are the customers we want to measure value for
 df2.filtered = df.2[df.2$days.count>365,]
-df2.filtered = ltv %>%
-      filter(id %in% df2.filtered$id)
+#df2.filtered = ltv %>%
+#      filter(id %in% df2.filtered$id)
 
 df2.filtered$cancelled = mapvalues(df2.filtered$cancelled, from=c('0','1','2'),to=c(0,0,1))
 #df.new$month = ifelse(round(df.new$csum.days/30)==0,1,round(df.new$csum.days/30))
-df2.filtered$days.count = ifelse(df2.filtered$cancelled==0,df2.filtered$days.count+df2.filtered$days.left,df2.filtered$days.count)
+df2.filtered$total.days.count =with(df2.filtered, ifelse(cancelled==0,days.count+days.left,days.count))
 
 df2.filtered$page.py = df2.filtered$page.visited/as.numeric(df2.filtered$days.count)*365
 df2.filtered$time.py = df2.filtered$time.spent/as.numeric(df2.filtered$days.count)*365
@@ -146,8 +145,20 @@ df2.final = df2.filtered[,c(2,10,11,12,13,14,15,16)]
 ```
 
 ```{r}
+ltv.var.names = c("gender","page.py", "time.py", "entered.py", "cmplt.py","hd.py")
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
+{
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- abs(cor(x, y))
+    txt <- format(c(r, 0.123456789), digits = digits)[1]
+    txt <- paste0(prefix, txt)
+    if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+    text(0.5, 0.5, txt, cex = pmax(1, cex.cor * r))
+}
 
-
+# Use panel.cor to display correlations in lower panel.
+pairs(df2.final[,ltv.var.names], lower.panel = panel.cor)
 ```
 
 ### Task 3: Customer Segmentation Scheme
