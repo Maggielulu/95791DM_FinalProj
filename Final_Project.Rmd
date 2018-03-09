@@ -303,7 +303,7 @@ df3$date <- ymd(df3$date)
 
 df3 <- df3 %>%
   group_by(id) %>% 
-  dplyr::mutate(duration = ifelse(date == min(date), 1, ifelse(status==2, ceiling((((date) - min(date))/30)), ceiling((as.Date("2014-12-31") - min(date))/30))), recency = ifelse(status==2, round((as.Date("2014-12-31")-max(date))/30,digits = 1),0))
+  dplyr::mutate(duration = ifelse(date == min(date), 1, ifelse(status==2, ceiling((((date) - min(date))/30)), ceiling((as.Date("2014-12-31") - min(date))/30))), recency = ifelse(status==2, round((as.Date("2014-12-31")-max(date))/30,digits = 1),0), t.month = ifelse(date==min(date),1,ceiling((max(date)-min(date))/30)))
 
 # test for task 2
 df4 <- df3 %>% 
