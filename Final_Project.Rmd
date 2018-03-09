@@ -20,36 +20,33 @@ library(klaR)
 library(rpart)
 library(randomForest)
 library(lubridate)
-library(factoextra)
-library(ape)
-library(gplots)
-library(RColorBrewer)
+library(gam)
+library(boot)
 #Load data
 ltv = read.csv(file = 'ltv.csv', header = TRUE)
-#suppress warnings
 ```
 
 ### Task 1: Attrition Model
-> To build an attrition model, first we want to clean up the data a bit to aggregate the information of each customer within a specifically defined timeframe. Here we would like to define the time interval to be 1 month-- partially because it is easier to aggregate, and therefore we define the near future to be the next month, in accordance with our dataframe. We then split the data into a test set and a training set, and then determines which of the variables we want to look into using subset selection criterias-- AIC/BIC. Finally, we look into different classfication models-- logistic regression, Naive Bayes and random forest to see which one has the best accuracy and specificity
+> To build an attrition model, first we want to clean up the data a bit to aggregate the information of each customer within a specifically defined timeframe. Here we would like to define the time interval to be 1 month-- partially because it is easier to aggregate, and therefore we define the near future to be the next month, in accordance with our dataframe. We then split the data into a test set and a training set, and then determines which of the variables we want to look into using subset selection criterias-- AIC and BIC. Finally, we look into different classfication models-- logistic regression, Naive Bayes and Random Rorest to see which one has the best accuracy and specificity
 
 #### Pre-processing the Data
 ```{r message=FALSE, warning=FALSE}
-
 #Create a new data frame capturing the end state and the time the customer's in the system
 #First of all transform the data: 
-
 df <- ltv %>%
   group_by(id) %>%
 dplyr::  mutate(duration = ifelse(as.Date(date)==min(as.Date(date)),1,ceiling(((as.Date(date)-min(as.Date(date))))/30)))
-
-df = ddply(df,c("id","gender","duration"),summarize, cancelled = max(status), days.count = length(date), page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
-
+#Find the cumulative value of the customers' behavior, summed by month: 
+df = ddply(df,c("id","gender","duration"),summarize, cancelled = max(status), days.count = length(date), page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = sum(holiday))
 df.new = ddply(df,.(id),transform,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
-
+#For Task 1, we only care about whether the customer has cancelled their subscription.
 df.new$cancelled = mapvalues(df.new$cancelled, from=c('0','1','2'),to=c(0,0,1))
-
 ltv.cleaned = df.new[,c(2,3,4,10,11,12,13,14,15)]
+#After observing the data, we have noticed that this data set is actually heavily imbalanced. We hereby provide a histogram highlighting the imbalance in the data
+ggplot(data=ltv.cleaned, aes(ltv.cleaned$cancelled)) + geom_histogram()+ labs(title="Histogram for Cancellation (0 - not cancelled, 1 - canceleld)")
+prop.table(table(ltv.cleaned$cancelled))
 ```
+> As seen from the histogram, the data is heavily imbalanced (with cancellation only making up 4% of the entire data set). Therefore, accuracy is not the only metric to evaluate our models. 
 
 #### Processing and Methods
 ```{r message=FALSE, warning=FALSE}
@@ -63,7 +60,7 @@ train_ind <- sample(seq_len(nrow(ltv.cleaned)), size = smp_size)
 ltv.train <- ltv.cleaned[train_ind, ]
 ltv.test <- ltv.cleaned[-train_ind, ]
 
-#Best subset
+#Best subset selection
 df.subset <- regsubsets(cancelled ~ .,
                data = ltv.train,
                nbest = 1,    # 1 best model for each number of predictors
@@ -80,15 +77,25 @@ names(coef(df.subset,which.min(df.subset.sum$cp)))
 which.min(df.subset.sum$bic)
 names(coef(df.subset,which.min(df.subset.sum$bic)))
 ```
-> This makes sense. We will then use several models to determine the fit.
+> This makes sense. Because the number of predictors is quite small, we can just use all of them to fit our models wihtout much elimination.  We will then use several models to determine the fit.
 
 #### Validation and Metrics
+##### Method 1: Logistic Regressions
+
+> The first method we look into is the logistic regression. We also take into consideration in the nature of the data set and investigate the best cutoff rate. 
+
 ```{r message=FALSE, warning=FALSE}
-#Method 1: Logistic Regressions
-glm.fit = glm(cancelled ~ .,family = binomial(), data = ltv.train)
-#fit the prediction to the test data, and transform the test data with a cut off of 0.5 to see the confusion matrix for fitting
+# Logistic Regression
+glm.fit = glm(cancelled ~.,family = binomial(), data = ltv.train)
+#fit the prediction to the test data, since the data is heavily imbalanced, we decide to use some helper functions to compute the AUC of the ROC curve in order to determine the best cutoff for the logistic regression. 
+
+# Adapted from https://stackoverflow.com/questions/16347507/obtaining-threshold-values-from-a-roc-curve
+my_roc <- roc(ltv.test$cancelled,predict(glm.fit,ltv.test,type='response'), )
+coords(my_roc, "best", ret = "threshold")
+plot(my_roc)
+
 test.pred.prec = predict(glm.fit,ltv.test,type='response')
-test.pred = ifelse(test.pred.prec < 0.4,0,1)
+test.pred = ifelse(test.pred.prec < 0.047,0,1)
 confusionMatrix(data = test.pred, reference = ltv.test$cancelled)
 #ROC plot
 roc.obj = roc(ltv.test$cancelled, test.pred.prec)
@@ -96,8 +103,9 @@ plot.roc(roc.obj, legacy.axes=TRUE)
 ```
 > The accuracy and sensitivity are both quite high in this scenario. In this case, we care more about the sensitivity than the specificity. We also explored the performance of Naive Bayes and Random Forest. 
 
+##### Method 2: Naive Bayes
+
 ```{r message=FALSE, warning=FALSE}
-#Method 2: Naive Bayes
 #suppress warnings
 options(warn=-1)
 ltv.train$cancelled <- factor(ltv.train$cancelled)
@@ -105,45 +113,45 @@ ltv.train.nb <- NaiveBayes(cancelled ~., data = ltv.train, usekernel = TRUE)
 confusionMatrix(predict(ltv.train.nb, ltv.test, type="class")$class, ltv.test$cancelled)
 
 #density plot
+qplot(data = ltv.cleaned, x = duration, geom = "density", fill = as.factor(cancelled), alpha = I(0.5),
+      main = "Duration")
 ```
-> From the density plot it is evident that there are a lot of overlapping between 
+> From the density plot it is evident that there are a lot of overlapping in the length of the users' membership (duration, in months) between those who cancelled and those who did not cancel. Thereofore, we decide not to use the Naive Bayes model, for it assumes independency among all predictors.
 
+##### Method 3: Random Forest
 
-```{r message=FALSE, warning=FALSE}
-#Method 3: Random Forest
-ltv.rf = randomForest(cancelled ~ .,data=ltv.train, importance=TRUE)
-print(ltv.rf)
+> Because of the heavily imbalanced data, we decide to put more weight on the cancelled data; the result is shown in the above confusion matrix. 
 
+```{r message=FALSE, warning=FALSE cache=TRUE}
+ltv.rf = randomForest(cancelled ~ .,data=ltv.train, classwt = c(1,20),importance=TRUE)
 pred = predict(ltv.rf, ltv.test)
 confusionMatrix(pred, ltv.test$cancelled)
 ```
+>The model has an accuracy rate of 92.87% and a sensitivity of 94.93%. It is a good model that we should pursue. 
 
 ### Task 2: Lifetime Value of A customer
+#### Pre-processing the Data
+
+> In order to predict the lifetime value of a customer, we have to first group the dataset by customer id, because we are now investigating the behavior of individual customers. We are now trying to predict how long the customer would keep the subscription alive if we have the record of this user's behavior over one month. 
+
 ```{r}
-#first, find about customer behavior for a year for every customer
-#then the y value would be the one that extend beyond the one year mark until the churn time. 
-#this is user-level behavior that we are trying to predict, therefore group the data by user_id
-df2.test  = ddply(ltv,c("id"),mutate,yr_status = ifelse(as.Date(date)<=min(as.Date(date))+365,"<1yr",">1yr"),total.days.spent = max(as.Date(date))-min(as.Date(date)))
-df2.test = ddply(df2.test,c("id","gender","yr_status","total.days.spent"),summarize, cancelled = max(status), days.count = length(date),days.left=max(as.Date(date))- min(as.Date(date)),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = sum(holiday), min_date = min(as.Date(date)),max_date = max(as.Date(date)))
-
-df2 = ddply(ltv,c("id","gender"),summarize, cancelled = max(status), days.count = max(as.Date(date))-min(as.Date(date)))
-#filter out the customers who have bene using this service for at least a year-- these are the customers we want to measure value for
-df2= df2[df2$days.count>365,]
-df2.filtered = df2.test %>%
-      filter(id %in% df2$id)
-
-df2.filtered$cancelled = mapvalues(df2.filtered$cancelled, from=c('0','1','2'),to=c(0,0,1))
-df2.behavior = df2.filtered[df2.filtered$yr_status=="<1yr",]
-df2.prediction = df2.filtered[df2.filtered$yr_status==">1yr",]
-df2.prediction$year.end= df2.prediction$max_date-df2.prediction$total.days.spent+365
-df2.prediction$lifetime= ifelse(df2.prediction$cancelled==1,df2.prediction$max_date-df2.prediction$year.end,as.Date("2014-12-31")-df2.prediction$year.end)
-df2.prediction = df2.prediction[,c(1,2,16)]
-df2.final = merge(df2.behavior,df2.prediction,by="id")[,c(2,6,8,9,10,11,12,16)]
+df2 <- ltv 
+df2$date <- ymd(df2$date)
+#transform the dataset to include how recent the user has been using the service and the frequency of the usage
+df2 <- df2 %>%
+   group_by(id) %>% 
+   dplyr::mutate(duration = ifelse(date == min(date), 1, ifelse(status==2, ceiling((((date) - min(date))/30)), ceiling((as.Date("2014-12-31") - min(date))/30))), recency = ifelse(status==2, round((as.Date("2014-12-31")-max(date))/30,digits = 1),0), t.month = ifelse(date==min(date),1,ceiling((max(date)-min(date))/30)))
+df2 <- df2 %>% 
+  group_by(id,gender) %>% 
+  dplyr::summarize(page.m = sum(pages)/max(t.month), onsite.m = sum(onsite)/max(t.month), enter.m = sum(entered)/max(t.month), completed.m = sum(completed)/max(t.month), holiday.m = sum(holiday)/max(t.month), duration = max(t.month), recency = max(recency), frequency = n())
 ```
+#### Examination of Correlation
+
+> Before building a model, we want to examine the correlation between our predictors
 
 ```{r}
 #Examination of the correlation between the variables
-ltv.var.names = c("gender.x","days.count", "page.visited", "time.spent", "entered.time","cmplt.time","holiday")
+ltv.var.names = c("gender","page.m", "onsite.m", "enter.m", "completed.m","holiday.m","recency","frequency")
 panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
 {
     usr <- par("usr"); on.exit(par(usr))
@@ -154,24 +162,31 @@ panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
     if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
     text(0.5, 0.5, txt, cex = pmax(1, cex.cor * r))
 }
-
 # Use panel.cor to display correlations in lower panel.
-pairs(df2.final[,ltv.var.names], lower.panel = panel.cor)
+pairs(df2[,ltv.var.names], lower.panel = panel.cor)
 ```
+> From the graph we can see some positive correlation between `page.m`, `onsite.m`,`enter.m` and `completed.m`, which makes sense. If a user browses a lot of pages, then he/she must have spent more time on the website and have a higher enter rate and completion rate.
+
+#### Best Subset Selection
 ```{r message=FALSE, warning=FALSE}
 #First split the dataset into a training set and a test set
-data(df2.final)
+data(df2)
 ## 70% of the sample size
-smp_size <- floor(0.7 * nrow(df2.final))
+#smp_size <- floor(0.7 * nrow(df2.final))
+smp_size <- floor(0.7 * nrow(df2))
 ## set the seed to make your partition reproductible
 set.seed(123)
-train_ind <- sample(seq_len(nrow(df2.final)), size = smp_size)
-ltv.train <- df2.final[train_ind, ]
-ltv.test <- df2.final[-train_ind, ]
+#train_ind <- sample(seq_len(nrow(df2.final)), size = smp_size)
+#ltv.train <- df2.final[train_ind, ]
+#ltv.test <- df2.final[-train_ind, ]
+train_ind <- sample(seq_len(nrow(df2)), size = smp_size)
+ltv.train <- df2[train_ind, ]
+ltv.test <- df2[-train_ind, ]
 
 #Best subset
-df.subset <- regsubsets(lifetime ~ .,
-               data = df2.final,
+df.subset <- regsubsets(duration ~.-id,
+               #data = df2.final,
+               data=df2,
                nbest = 1,    # 1 best model for each number of predictors
                nvmax = NULL,    # NULL for no limit on number of variables
                method = "exhaustive", really.big = TRUE)
@@ -188,146 +203,174 @@ names(coef(df.subset,which.min(df.subset.sum$bic)))
 
 #Forward Stepwise Selection
 options(max.print=999999)
-ltv.forward.subset <- regsubsets(lifetime ~ .,
-               data = df2.final,
+ltv.forward.subset <- regsubsets(duration~ .,
+               #data = df2.final,
+               data = df2,
                nbest = 1,    # 1 best model for each number of predictors
                nvmax = NULL,    # NULL for no limit on number of variables
                method = "forward")
 
 summary(ltv.forward.subset)
 ```
+> Using BIC criteria we have identified 7 predictors that we will include in our GAM model below
 
+#### Building the GAM Model
+##### Prepping the Data
+> Here we include two functions that we use to fit the models between each of the 7 predictors and the outcome. Adapted from Homework 2
 
 ```{r}
+# Function that trains a degree d polynomial on the training data
+# and returns its prediction error on the test data
+# It is assumed that train and test are data frames, with 2 columns, the
+# first named x, the second named y
+# Output: The test MSE of the model
+polyTestErr <- function(dat, train, d) {
+  poly.fit <- lm(y ~ poly(x, degree = d), data = dat, subset = train)
+  preds <- predict(poly.fit, dat)[-train]
+  mean((dat$y[-train] - preds)^2)
+}
 
+# Function that trains a cubic spline with df degrees of freedom
+# The model is fit on the training data, 
+# and  its prediction error is calculated on the test data
+# It is assumed that train and test are data frames, with 2 columns, the
+# first named x, the second named y
+# Output: The test MSE of the model
+cubicSplineTestErr <- function(dat, train, df) {
+  if(df >= 3) {
+    spline.fit <- lm(y ~ bs(x, df = df), data = dat, subset = train)
+    preds <- predict(spline.fit, dat)[-train]
+    mean((dat$y[-train] - preds)^2)
+  } else {
+    NA
+  }
+}
 
+# Function that trains a smoothing spline with df degrees of freedom
+# The model is fit on the training data, 
+# and  its prediction error is calculated on the test data
+# It is assumed that train and test are data frames, with 2 columns, the
+# first named x, the second named y
+# Output: The test MSE of the model
+smoothSplineTestErr <- function(dat, train, df) {
+  if(df > 1) {
+    spline.fit <- with(dat, smooth.spline(x[train], y[train], df = df))
+    preds <- predict(spline.fit, dat$x)$y[-train]
+    mean((dat$y[-train] - preds)^2)
+  } else {
+    NA
+  }
+}
 
-
-```
-### Task 3: Customer Segmentation Scheme
-#### Processing and Methods
-```{r}
-# create a data frame with new variables `duration` and `recency`.`duration` measures how many months a customer matains status==1 in the system, and `recency` meausres how many days since a user last logged in. 
-
-df3 <- ltv 
-df3$date <- ymd(df3$date)
-
-df3 <- df3 %>%
-  group_by(id) %>% 
-  dplyr::mutate(duration = ifelse(date == min(date), 1, ifelse(status==2, ceiling((((date) - min(date))/30)), ceiling((as.Date("2014-12-31") - min(date))/30))), recency = round((as.Date("2014-12-31")-max(date))/30, digits = 1)) 
+smoothCV <- function(x, y, K = 10, df.min = 1, df.max = 10) {
+  dat <- data.frame(x = x, y = y)
+  n <- length(y) # number of observations
   
-# Filter down to customer whose status =1
-rmf <- df3 %>% 
-  filter(row_number()==n()) %>% 
-  filter(status==1) %>% 
-  dplyr::select(id,duration,recency) 
+  num.methods <- 3
+  method.names <- c("poly", "cubic.spline", "smoothing.spline")
+  err.out <- data.frame(df = rep(df.min:df.max, each = num.methods),
+                        method = rep(method.names, df.max - df.min + 1))
+  
+  # Get a random permutation of the indexes
+  random.perm <- sample(n)
+  # break points for the folds.  If n is not evenly divisible by K,
+  # these may not be of exactly the same size.
+  fold.breaks <- round(seq(1,n+1, length.out = K + 1))
+  fold.start <- fold.breaks[1:K]
+  fold.end <- fold.breaks[2:(K+1)] - 1
+  fold.end[K] <- n # Fix the last endoint to equal n
+  fold.size <- fold.end - fold.start + 1 # num obs in each fold
+  
+  cv.err <- NULL
+  fold.err <- matrix(0, nrow = K, ncol = 3)
+  colnames(fold.err) <- c("poly", "cubic.spline", "smoothing.spline")
+  # Outer loop: Iterate over the K folds
+  # Inner loop: Loop over degrees of freedom
+  for(df in df.min:df.max) {
+    for(k in 1:K) {
+      test.idx <- fold.start[k]:fold.end[k]
+      train <- random.perm[-test.idx]
+      
+      # Calculate test error for the three models
+      poly.err <- polyTestErr(dat, train = train, d = df)
+      cubic.spline.err <- cubicSplineTestErr(dat, train = train, df = df)
+      smooth.spline.err <- smoothSplineTestErr(dat, train = train, df = df)
+      
+      # Store results for this fold
+      fold.err[k,] <- c(poly.err, cubic.spline.err, smooth.spline.err)
+#       print(fold.err[k,])
+    }
+    # Perform weighted averaging to calculate CV error estimate
+    # MSE estimates from each fold are weighted by the size of the fold
+    # If all folds are the same size, this is the same thing as the unweighted
+    # average of all of the MSE's
+    err.ave <- colSums(sweep(fold.err, MARGIN = 1, fold.size, FUN = "*") / n)
+    cv.err <- c(cv.err, err.ave)
+  }
+  err.out$cv.error <- cv.err
+  err.out
+}
 
-
+# This plotting approach has a facet option which allows the user to show
+# three separate plots instead of overlaying the curves
+# If y.scale.factor is non-null, the range of the 
+# y-axis for the plot is restricted to y.min to y.min*y.scale.factor
+plot.smoothCV <- function(smoothcv.err, K, title.text = "", facet = FALSE,
+                          y.scale.factor = NULL) {
+  dat <- transform(smoothcv.err, 
+                   method = mapvalues(method,
+                                      c("poly", "cubic.spline", "smoothing.spline"),
+                                      c("Polynomial", "Cubic spline", "Smoothing Spline")
+                                      )
+                   )
+  x.text <- "Degrees of Freedom"
+  y.text <- paste0(K, "-fold CV Error")
+  p <- ggplot(data = dat, aes(x = df, y = cv.error, colour = method)) 
+  p <- p + geom_line() + geom_point() + xlab(x.text) + ylab(y.text) +
+          ggtitle(title.text)
+  
+  if(!is.null(y.scale.factor)) {
+    min.err <- min(dat$cv.error, na.rm = TRUE)
+    p <- p + ylim(min.err, y.scale.factor * min.err)
+  }
+  
+  if(!facet) {
+    print(p)
+  } else {
+    print(p + facet_wrap("method"))
+  }
+}
 ```
-#### Validation and Metrics
-```{r}
-#Method 1: K-means
-
-# Standardize variables to have mean zero and standard deviation one.
-rmf$duration=as.numeric(rmf$duration)
-rmf$recency=as.numeric(rmf$recency)
-rmf<- as_tibble(rmf)
-rmf.scale <- rmf[-1] %>% as.matrix %>% scale
-
-set.seed(1234)
-km.out =kmeans (rmf.scale,3, nstart =20)
-km.out$centers
-plot(rmf.scale, col=(km.out$cluster+1), main="K-Means Clustering Results with K=3", xlab="Duration", ylab="Recency", pch=20, cex=2)
-
-rmf.scale %>%
-  as_tibble() %>%
-  mutate(cluster = km.out$cluster, id = rmf$id) %>%
-  ggplot(aes(duration, recency, color = factor(cluster), label = id)) +
-  geom_text()
-
-# Unscale k-means' centers
-scale.scale = as.data.frame(attr(rmf.scale,'scaled:scale'))
-scale.center = as.data.frame(attr(rmf.scale,'scaled:center'))
-center.unscale = as.data.frame(km.out$centers)
-center.unscale$unsl.duration = (center.unscale$duration)*scale.scale[1, ] + scale.center[1, ]
-center.unscale$unsl.recency = (center.unscale$recency)*scale.scale[2, ] + scale.center[2, ]
-center.unscale
-
-set.seed(1234)
-
-# Determine optimal clusters
-
-fviz_nbclust(rmf.scale, kmeans, method = "wss")
-fviz_nbclust(rmf.scale, kmeans, method = "silhouette")
-
-```
-
-```{r}
-#Method 2: Hierarchical clustering
-hc.complete <- hclust(dist(rmf.scale), method="complete")
-hc.average <- hclust(dist(rmf.scale), method="average")
-hc.single <- hclust(dist(rmf.scale), method="single")
-
-# fviz_nbclust(rmf.scale, FUN = hcut, method = "wss")
-# fviz_nbclust(rmf.scale, FUN = hcut, method = "silhouette")
-
-par(mfrow = c(1,3))
-plot(rmf.scale, col=(cutree(hc.complete, 3)+1), main="Complete linkage clustering with K=2", xlab="", ylab="", pch=20, cex=2)
-plot(rmf.scale, col=(cutree(hc.average, 3)+1), main="Average linkage clustering with K=2", xlab="", ylab="", pch=20, cex=2)
-plot(rmf.scale, col=(cutree(hc.single, 3)+1), main="Single linkage clustering with K=2", xlab="", ylab="", pch=20, cex=2)
-
-sub_grp <- cutree(hc.single, k = 4)
-table(sub_grp)
-
-# Set colours for heatmap, 25 increments
-my_palette <- colorRampPalette(brewer.pal(9, "GnBu"))(100)
-
-# Plot heatmap with heatmap.2
-par(cex.main=0.75) # Shrink title fonts on plot
-gplots::heatmap.2(rmf.scale,                     # Tidy, normalised data
-          dendrogram = "row",
-          Colv="NA",     # Experiments clusters in cols
-          Rowv=dend,     # Protein clusters in rows
-          trace="none",               # Turn of trace lines from heat map
-          margins =c(5,0.1), 
-          density.info = "density",
-          col = my_palette,           # Use my colour scheme
-          cexRow=0.5,cexCol=0.75)     # Amend row and column label fonts
-
-```
+##### Plotting and Determining the Models
+> After loading the functions, we plot out all the predictors with the outcome variables to determine which model to use for our final GAM model
 
 ```{r}
-# New methods for task 2
-df3 <- ltv 
-df3$date <- ymd(df3$date)
+cv.mnth <- smoothCV(x = df2$page.m, y = df2$duration, df.min = 1, df.max = 10)
+plot.smoothCV(cv.mnth, K = 10, title.text = "CV Error: duration ~ page")
 
-df3 <- df3 %>%
-  group_by(id) %>% 
-  dplyr::mutate(duration = ifelse(date == min(date), 1, ifelse(status==2, ceiling((((date) - min(date))/30)), ceiling((as.Date("2014-12-31") - min(date))/30))), recency = ifelse(status==2, round((as.Date("2014-12-31")-max(date))/30,digits = 1),0), t.month = ifelse(date==min(date),1,ceiling((max(date)-min(date))/30)))
+cv.mnth <- smoothCV(x = df2$enter.m, y = df2$duration, df.min = 1, df.max = 10)
+plot.smoothCV(cv.mnth, K = 10, title.text = "CV Error: duration ~ enter")
 
-# test for task 2
-df4 <- df3 %>% 
-  group_by(id,gender) %>% 
-  dplyr::summarize(page.m = sum(pages)/max(t.month), onsite.m = sum(onsite)/max(t.month), enter.m = sum(entered)/max(t.month), completed.m = sum(completed)/max(t.month), holiday.m = sum(holiday)/max(t.month), duration = max(t.month), recency = max(recency), frequency = n())
+cv.mnth <- smoothCV(x = df2$completed.m, y = df2$duration, df.min = 1, df.max = 10)
+plot.smoothCV(cv.mnth, K = 10, title.text = "CV Error: duration ~ completed")
 
-#First split the dataset into a training set and a test set
-data(df4)
-## 70% of the sample size
-smp_size <- floor(0.7 * nrow(df4))
-## set the seed to make your partition reproductible
-set.seed(123)
-train_ind <- sample(seq_len(nrow(df4)), size = smp_size)
-ltv.train <- df4[train_ind, ]
-ltv.test <- df4[-train_ind, ]
+cv.mnth <- smoothCV(x = df2$holiday.m, y = df2$duration, df.min = 1, df.max = 10)
+plot.smoothCV(cv.mnth, K = 10, title.text = "CV Error: duration ~ holiday")
 
-# Fit 
-set.seed(1)
-testtest = randomForest(duration~., data=ltv.train)
-y.hat=as.numeric(y.hat)
-test.y = ltv.test$duration
-mean((y.hat-test.y)^2)
+cv.mnth <- smoothCV(x = df2$recency, y = df2$duration, df.min = 1, df.max = 10)
+plot.smoothCV(cv.mnth, K = 10, title.text = "CV Error: duration ~ recency")
 
+cv.mnth <- smoothCV(x = df2$frequency, y = df2$duration, df.min = 1, df.max = 10)
+plot.frequency = plot.smoothCV(cv.mnth, K = 10, title.text = "CV Error: duration ~ frequency")
 ```
 
+##### Final GAM Model
+```{r}
+gam.fit = gam(duration~bs(page.m,6)+bs(enter.m,6)+bs(completed.m,6)+s(holiday.m,5)+bs(recency,4)+poly(frequency,4)+gender,data=ltv.train)
+gam.pred = predict(gam.fit,ltv.test)
+mean((gam.pred-ltv.test$duration)^2)
+summary(gam.fit)
+```
+> Our final model has the MSE of 6.58, which means that our model's prediction error would be well within 3 month's of a user's lifetime value. Given that this website has a prescription model of 1$ per month, we think that this is a reasonable error and this is a good model to use. 
 
-### Summary of Findings
+### Task 3: Customer Segmentation Scheme
