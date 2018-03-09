@@ -308,7 +308,7 @@ df3 <- df3 %>%
 # test for task 2
 df4 <- df3 %>% 
   group_by(id,gender) %>% 
-  dplyr::summarize(page.m = sum(pages)/max(duration), onsite.m = sum(pages)/max(duration), enter.m = sum(entered)/max(duration), completed.m = sum(completed)/max(duration), holiday.m = sum(holiday)/max(duration), duration = max(duration), recency = max(recency), frequency = n())
+  dplyr::summarize(page.m = sum(pages)/max(t.month), onsite.m = sum(onsite)/max(t.month), enter.m = sum(entered)/max(t.month), completed.m = sum(completed)/max(t.month), holiday.m = sum(holiday)/max(t.month), duration = max(t.month), recency = max(recency), frequency = n())
 
 #First split the dataset into a training set and a test set
 data(df4)
