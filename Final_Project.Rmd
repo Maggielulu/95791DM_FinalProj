@@ -38,9 +38,9 @@ df <- ltv %>%
   group_by(id) %>%
 dplyr::  mutate(duration = ifelse(as.Date(date)==min(as.Date(date)),1,ceiling(((as.Date(date)-min(as.Date(date))))/30)))
 
-df2 = ddply(df,c("id","gender","duration"),summarize, cancelled = max(status), days.count = length(date), page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
+df = ddply(df,c("id","gender","duration"),summarize, cancelled = max(status), days.count = length(date), page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
 
-df.new = ddply(df2,.(id),transform,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
+df.new = ddply(df,.(id),transform,csum.days= cumsum(days.count),csum.page=cumsum(page.visited),csum.onsite= cumsum(time.spent), csum.entered = cumsum(entered.time), csum.cmplt.time = cumsum(cmplt.time))
 
 df.new$cancelled = mapvalues(df.new$cancelled, from=c('0','1','2'),to=c(0,0,1))
 
@@ -90,7 +90,7 @@ confusionMatrix(data = test.pred, reference = ltv.test$cancelled)
 roc.obj = roc(ltv.test$cancelled, test.pred.prec)
 plot.roc(roc.obj, legacy.axes=TRUE)
 ```
-> 
+> The accuracy and sensitivity are both quite high in this scenario. In this case, we care more about the sensitivity than the specificity. We also explored the performance of Naive Bayes and Random Forest. 
 
 ```{r message=FALSE, warning=FALSE}
 #Method 2: Naive Bayes
@@ -99,7 +99,11 @@ options(warn=-1)
 ltv.train$cancelled <- factor(ltv.train$cancelled)
 ltv.train.nb <- NaiveBayes(cancelled ~., data = ltv.train, usekernel = TRUE)
 confusionMatrix(predict(ltv.train.nb, ltv.test, type="class")$class, ltv.test$cancelled)
+
+#density plot
 ```
+> From the density plot it is evident that there are a lot of overlapping between 
+
 
 ```{r message=FALSE, warning=FALSE}
 #Method 3: Random Forest
@@ -112,40 +116,30 @@ confusionMatrix(pred, ltv.test$cancelled)
 
 ### Task 2: Lifetime Value of A customer
 ```{r}
-#another way to aggregate the data
-df2.test  = ddply(ltv,c("id"),mutate,yr_status = ifelse(as.Date(date)<=min(as.Date(date))+365,"<1yr",">1yr"))
-df2.test = ddply(df2.test,c("id","gender","yr_status"),summarize, cancelled = max(status), days.count = max(as.Date(date))-min(as.Date(date)),days.left = as.Date("2014-12-31")- max(as.Date(date)),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
-
-```
-
-
-```{r}
 #first, find about customer behavior for a year for every customer
 #then the y value would be the one that extend beyond the one year mark until the churn time. 
-
 #this is user-level behavior that we are trying to predict, therefore group the data by user_id
-df.2 = ddply(ltv,c("id","gender"),summarize, cancelled = max(status), days.count = max(as.Date(date))-min(as.Date(date)),days.left = as.Date("2014-12-31")- max(as.Date(date)),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = max(holiday))
+df2.test  = ddply(ltv,c("id"),mutate,yr_status = ifelse(as.Date(date)<=min(as.Date(date))+365,"<1yr",">1yr"),total.days.spent = max(as.Date(date))-min(as.Date(date)))
+df2.test = ddply(df2.test,c("id","gender","yr_status","total.days.spent"),summarize, cancelled = max(status), days.count = length(date),days.left=max(as.Date(date))- min(as.Date(date)),page.visited=sum(pages),time.spent=sum(onsite),entered.time = sum(entered), cmplt.time = sum(completed),holiday = sum(holiday), min_date = min(as.Date(date)),max_date = max(as.Date(date)))
+
+df2 = ddply(ltv,c("id","gender"),summarize, cancelled = max(status), days.count = max(as.Date(date))-min(as.Date(date)))
 #filter out the customers who have bene using this service for at least a year-- these are the customers we want to measure value for
-df2.filtered = df.2[df.2$days.count>365,]
-#df2.filtered = ltv %>%
-#      filter(id %in% df2.filtered$id)
+df2= df2[df2$days.count>365,]
+df2.filtered = df2.test %>%
+      filter(id %in% df2$id)
 
 df2.filtered$cancelled = mapvalues(df2.filtered$cancelled, from=c('0','1','2'),to=c(0,0,1))
-#df.new$month = ifelse(round(df.new$csum.days/30)==0,1,round(df.new$csum.days/30))
-df2.filtered$total.days.count =with(df2.filtered, ifelse(cancelled==0,days.count+days.left,days.count))
-
-df2.filtered$page.py = df2.filtered$page.visited/as.numeric(df2.filtered$days.count)*365
-df2.filtered$time.py = df2.filtered$time.spent/as.numeric(df2.filtered$days.count)*365
-df2.filtered$entered.py = df2.filtered$entered.time/as.numeric(df2.filtered$days.count)*365
-df2.filtered$cmplt.py = df2.filtered$cmplt.time/as.numeric(df2.filtered$days.count)*365
-df2.filtered$hd.py = df2.filtered$holiday/as.numeric(df2.filtered$days.count)*365
-df2.filtered$ltv.obs = (as.numeric(df2.filtered$days.count)-365)/as.numeric(df2.filtered$days.count)
-
-df2.final = df2.filtered[,c(2,10,11,12,13,14,15,16)]
+df2.behavior = df2.filtered[df2.filtered$yr_status=="<1yr",]
+df2.prediction = df2.filtered[df2.filtered$yr_status==">1yr",]
+df2.prediction$year.end= df2.prediction$max_date-df2.prediction$total.days.spent+365
+df2.prediction$lifetime= ifelse(df2.prediction$cancelled==1,df2.prediction$max_date-df2.prediction$year.end,as.Date("2014-12-31")-df2.prediction$year.end)
+df2.prediction = df2.prediction[,c(1,2,16)]
+df2.final = merge(df2.behavior,df2.prediction,by="id")[,c(2,6,8,9,10,11,12,16)]
 ```
 
 ```{r}
-ltv.var.names = c("gender","page.py", "time.py", "entered.py", "cmplt.py","hd.py")
+#Examination of the correlation between the variables
+ltv.var.names = c("gender.x","days.count", "page.visited", "time.spent", "entered.time","cmplt.time","holiday")
 panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
 {
     usr <- par("usr"); on.exit(par(usr))
@@ -160,7 +154,52 @@ panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
 # Use panel.cor to display correlations in lower panel.
 pairs(df2.final[,ltv.var.names], lower.panel = panel.cor)
 ```
+```{r message=FALSE, warning=FALSE}
+#First split the dataset into a training set and a test set
+data(df2.final)
+## 70% of the sample size
+smp_size <- floor(0.7 * nrow(df2.final))
+## set the seed to make your partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(df2.final)), size = smp_size)
+ltv.train <- df2.final[train_ind, ]
+ltv.test <- df2.final[-train_ind, ]
 
+#Best subset
+df.subset <- regsubsets(lifetime ~ .,
+               data = df2.final,
+               nbest = 1,    # 1 best model for each number of predictors
+               nvmax = NULL,    # NULL for no limit on number of variables
+               method = "exhaustive", really.big = TRUE)
+df.subset.sum = summary(df.subset)
+df.subset.sum
+
+#AIC
+which.min(df.subset.sum$cp)
+names(coef(df.subset,which.min(df.subset.sum$cp)))
+ 
+#BIC
+which.min(df.subset.sum$bic)
+names(coef(df.subset,which.min(df.subset.sum$bic)))
+
+#Forward Stepwise Selection
+options(max.print=999999)
+ltv.forward.subset <- regsubsets(lifetime ~ .,
+               data = df2.final,
+               nbest = 1,    # 1 best model for each number of predictors
+               nvmax = NULL,    # NULL for no limit on number of variables
+               method = "forward")
+
+summary(ltv.forward.subset)
+```
+
+
+```{r}
+
+
+
+
+```
 ### Task 3: Customer Segmentation Scheme
 #### Processing and Methods
 ```{r}
