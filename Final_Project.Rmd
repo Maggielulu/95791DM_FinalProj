@@ -22,6 +22,12 @@ library(randomForest)
 library(lubridate)
 library(gam)
 library(boot)
+library(factoextra)
+library(ape)
+library(gplots)
+library(RColorBrewer)
+library(dendextend
+
 #Load data
 ltv = read.csv(file = 'ltv.csv', header = TRUE)
 ```
@@ -374,3 +380,130 @@ summary(gam.fit)
 > Our final model has the MSE of 6.58, which means that our model's prediction error would be well within 3 month's of a user's lifetime value. Given that this website has a prescription model of 1$ per month, we think that this is a reasonable error and this is a good model to use. 
 
 ### Task 3: Customer Segmentation Scheme
+
+#### Processing and Methods
+```{r}
+df5 <- ltv 
+df5$date <- ymd(df5$date)
+
+df5 <- df5 %>%
+  group_by(id) %>% 
+  dplyr::mutate(duration = ifelse(date == min(date), 1, ifelse(status==2, ceiling((((date) - min(date))/30)), ceiling((as.Date("2014-12-31") - min(date))/30))), recency = round((as.Date("2014-12-31")-max(date))/30, digits = 1))
+
+# Filter down to customer whose status =1
+rmf <- df5 %>% 
+  filter(row_number()==n()) %>% 
+  filter(status==1) %>% 
+  dplyr::select(id,duration,recency) 
+
+```
+
+> First we create 2 new variables in the data frame. `duration` measures how many months a customer matains status==1 in the system, and `recency` meausres how many days since a user last logged in. Since our task is to develop a customer segmentation scheme, we can choose to filter out those who have already cancelled their accounts.
+
+#### Validation and Metrics
+##### **Method 1: K-means**
+
+```{r}
+#Method 1: K-means
+
+# Standardize variables to have mean zero and standard deviation one.
+rmf$duration=as.numeric(rmf$duration)
+rmf$recency=as.numeric(rmf$recency)
+rmf<- as_tibble(rmf)
+rmf.scale <- rmf[-1] %>% as.matrix %>% scale
+
+set.seed(1234)
+# Determine optimal clusters
+fviz_nbclust(rmf.scale, kmeans, method = "wss")
+fviz_nbclust(rmf.scale, kmeans, method = "silhouette")
+```
+
+> The total within-cluster sum of square (wss) measures the compactness of the clustering and we want it to be as small as possible.The results suggest that 10 is the optimal number of clusters as it appears to be the bend in the knee, but the improvement by adding more number of clusters is not that significant after the third cluster. Besides, the average silhouette approach measures the quality of a clustering. A high average silhouette width indicates a good clustering. The results show that 3 clusters maximize the average silhouette values. Therefore, we decide to go with 3 clusters in k-means.
+
+```{r}
+set.seed(1234)
+km.out =kmeans (rmf.scale,3, nstart =20)
+plot(rmf.scale, col=(km.out$cluster+1), main="K-Means Clustering Results with K=3", xlab="Duration", ylab="Recency", pch=20, cex=2)
+
+rmf.scale %>%
+  as_tibble() %>%
+  mutate(cluster = km.out$cluster, id = rmf$id) %>%
+  ggplot(aes(duration, recency, color = factor(cluster), label = id)) +
+  geom_text()
+
+# Unscale k-means' centers
+scale.scale = as.data.frame(attr(rmf.scale,'scaled:scale'))
+scale.center = as.data.frame(attr(rmf.scale,'scaled:center'))
+center.unscale = as.data.frame(km.out$centers)
+center.unscale$unsl.duration = (center.unscale$duration)*scale.scale[1, ] + scale.center[1, ]
+center.unscale$unsl.recency = (center.unscale$recency)*scale.scale[2, ] + scale.center[2, ]
+kable(center.unscale, caption = "Cluster Centers")
+kable(km.out$size, caption = "Cluster Size")
+```
+
+> The plots above show the results of our k-means clustering: cluster 1 includes cutomers who have an average of 9 months duration and 0.5 month recency; cluster 2 includes customers who have an average of 33 months duration and 1 month recency; cluster 3 includes customers who have an average of 37 monts duration and 18 months recency. Therefore, we can identify people in cluster 3 as sleeping customers, while people in cluster 1 as active new customers, and people in cluster 2 as long-term loyal customers. But we can also see the limits by performing k-means clustering: customers with who are on the boundary of cluster 2 are classified in cluster 3. This is due to K-means struggles when the clusters have different densities; in this problem sleeping customers are not majority, and there are only 145 customers being assgined to cluster 3.
+
+##### **Method 2: Hierarchical clustering**
+```{r}
+#Method 2: Hierarchical clustering
+hc.complete <- hclust(dist(rmf.scale), method="complete")
+hc.average <- hclust(dist(rmf.scale), method="average")
+hc.single <- hclust(dist(rmf.scale), method="single")
+```
+
+
+```{r}
+# Plot 
+par(mfrow = c(1,3))
+plot(rmf.scale, col=(cutree(hc.complete, 3)+1), main="Complete linkage clustering with K=3", xlab="", ylab="", pch=20, cex=0.5)
+plot(rmf.scale, col=(cutree(hc.average, 3)+1), main="Average linkage clustering with K=3", xlab="", ylab="", pch=20, cex=0.5)
+plot(rmf.scale, col=(cutree(hc.single, 3)+1), main="Single linkage clustering with K=3", xlab="", ylab="", pch=20, cex=0.5)
+
+sub.single <- cutree(hc.single, k = 3)
+kable(table(sub.single))
+```
+
+> By setting numbers of groups = 3, hierarchical clustering using complete linkage yields similar ouputs as k-means clustering. Due to the fact that single linkage records the smallest of pairwise dissimilarities, it only assigns 4 observations in class 3 and 1 observation in class 1.
+
+```{r}
+sub.complete <- cutree(hc.complete, k = 2)
+sub.average <- cutree(hc.average, k = 2)
+
+par(mfrow = c(1,2))
+fviz_cluster(list(data = rmf.scale, cluster = sub.complete))
+fviz_cluster(list(data = rmf.scale, cluster = sub.average))
+```
+
+> By setting numbers of groups = 2, hierarchical clustering using complete linkage and average linkage yields similar ouputs. About 80 out of 3681 customers are now classified as sleeping customers, with an average of 37 monts duration and 16 months recency. 
+
+
+```{r}
+dend <- as.dendrogram(hc.complete)
+
+# Set colours for heatmap, 25 increments
+my_palette <- colorRampPalette(brewer.pal(9, "GnBu"))(100)
+
+# Plot heatmap with heatmap.2
+par(cex.main=0.75) 
+gplots::heatmap.2(rmf.scale,                  
+          dendrogram = "row",
+          Colv="NA",     
+          Rowv=dend,    
+          trace="none",              
+          margins =c(5,0.1), 
+          density.info = "density",
+          col = my_palette,          
+          cexRow=0.5,cexCol=0.75)   
+```
+
+> From the heatmap (using complete linkage) we can compare differences for each customer and between duration and recency in a single plot. The color in the heatmap indicates the value of each varialbe (from light green to dark blue). We don't see much variation across individuals in this data set, but we can clearly tell that a small proportion of individuals with high duration and high recency; those are the people we identify as sleeping customers.
+
+
+
+> reference: http://uc-r.github.io/hc_clustering 
+https://uc-r.github.io/kmeans_clustering
+https://cran.r-project.org/web/packages/dendextend/vignettes/Cluster_Analysis.html 
+
+
+
+
