@@ -22,12 +22,6 @@ library(randomForest)
 library(lubridate)
 library(gam)
 library(boot)
-library(factoextra)
-library(ape)
-library(gplots)
-library(RColorBrewer)
-library(dendextend
-
 #Load data
 ltv = read.csv(file = 'ltv.csv', header = TRUE)
 ```
@@ -35,7 +29,10 @@ ltv = read.csv(file = 'ltv.csv', header = TRUE)
 ### Task 1: Attrition Model
 > To build an attrition model, first we want to clean up the data a bit to aggregate the information of each customer within a specifically defined timeframe. Here we would like to define the time interval to be 1 month-- partially because it is easier to aggregate, and therefore we define the near future to be the next month, in accordance with our dataframe. We then split the data into a test set and a training set, and then determines which of the variables we want to look into using subset selection criterias-- AIC and BIC. Finally, we look into different classfication models-- logistic regression, Naive Bayes and Random Rorest to see which one has the best accuracy and specificity
 
-#### Pre-processing the Data
+#### Data Exploration: Pre-processing the Data
+##### Scope
+> After looking at the original data frame `ltv.csv`, we decided to transform the data set based on the cumulative monthly activities in aspects of cumulative sum of the pages visited, time spent, number of times a user enters information, and the number of times a user checks out. We also keep track of user's gender and the holiday information in the original data set
+
 ```{r message=FALSE, warning=FALSE}
 #Create a new data frame capturing the end state and the time the customer's in the system
 #First of all transform the data: 
@@ -48,13 +45,19 @@ df.new = ddply(df,.(id),transform,csum.days= cumsum(days.count),csum.page=cumsum
 #For Task 1, we only care about whether the customer has cancelled their subscription.
 df.new$cancelled = mapvalues(df.new$cancelled, from=c('0','1','2'),to=c(0,0,1))
 ltv.cleaned = df.new[,c(2,3,4,10,11,12,13,14,15)]
-#After observing the data, we have noticed that this data set is actually heavily imbalanced. We hereby provide a histogram highlighting the imbalance in the data
+```
+
+##### Visualization
+> After observing the data, we have noticed that this data set is actually heavily imbalanced. We hereby provide a histogram highlighting the imbalance in the data
+
+```{r}
 ggplot(data=ltv.cleaned, aes(ltv.cleaned$cancelled)) + geom_histogram()+ labs(title="Histogram for Cancellation (0 - not cancelled, 1 - canceleld)")
 prop.table(table(ltv.cleaned$cancelled))
 ```
-> As seen from the histogram, the data is heavily imbalanced (with cancellation only making up 4% of the entire data set). Therefore, accuracy is not the only metric to evaluate our models. 
 
-#### Processing and Methods
+> As seen from the histogram, the data is heavily imbalanced (with cancellation only making up 4% of the entire data set). Therefore, accuracy is not the only metric to evaluate our models. Next, we would try to analyze the data using different models, with metrics and validation process to determine the best model. 
+
+#### Data Analysis: Processing and Methods
 ```{r message=FALSE, warning=FALSE}
 #First split the dataset into a training set and a test set
 data(ltv.cleaned)
@@ -83,9 +86,11 @@ names(coef(df.subset,which.min(df.subset.sum$cp)))
 which.min(df.subset.sum$bic)
 names(coef(df.subset,which.min(df.subset.sum$bic)))
 ```
+
 > This makes sense. Because the number of predictors is quite small, we can just use all of them to fit our models wihtout much elimination.  We will then use several models to determine the fit.
 
-#### Validation and Metrics
+#### Data Analysis: Validation and Metrics
+
 ##### Method 1: Logistic Regressions
 
 > The first method we look into is the logistic regression. We also take into consideration in the nature of the data set and investigate the best cutoff rate. 
@@ -97,16 +102,17 @@ glm.fit = glm(cancelled ~.,family = binomial(), data = ltv.train)
 
 # Adapted from https://stackoverflow.com/questions/16347507/obtaining-threshold-values-from-a-roc-curve
 my_roc <- roc(ltv.test$cancelled,predict(glm.fit,ltv.test,type='response'), )
-coords(my_roc, "best", ret = "threshold")
-plot(my_roc)
+cutoff <- coords(my_roc, "best", ret = "threshold")
 
 test.pred.prec = predict(glm.fit,ltv.test,type='response')
-test.pred = ifelse(test.pred.prec < 0.047,0,1)
+test.pred = ifelse(test.pred.prec < cutoff,0,1)
 confusionMatrix(data = test.pred, reference = ltv.test$cancelled)
 #ROC plot
 roc.obj = roc(ltv.test$cancelled, test.pred.prec)
 plot.roc(roc.obj, legacy.axes=TRUE)
+
 ```
+
 > The accuracy and sensitivity are both quite high in this scenario. In this case, we care more about the sensitivity than the specificity. We also explored the performance of Naive Bayes and Random Forest. 
 
 ##### Method 2: Naive Bayes
@@ -116,29 +122,36 @@ plot.roc(roc.obj, legacy.axes=TRUE)
 options(warn=-1)
 ltv.train$cancelled <- factor(ltv.train$cancelled)
 ltv.train.nb <- NaiveBayes(cancelled ~., data = ltv.train, usekernel = TRUE)
-confusionMatrix(predict(ltv.train.nb, ltv.test, type="class")$class, ltv.test$cancelled)
+nb.pred = predict(ltv.train.nb, ltv.test, type="class")$class
+confusionMatrix(nb.pred, ltv.test$cancelled)
 
 #density plot
 qplot(data = ltv.cleaned, x = duration, geom = "density", fill = as.factor(cancelled), alpha = I(0.5),
       main = "Duration")
 ```
+
 > From the density plot it is evident that there are a lot of overlapping in the length of the users' membership (duration, in months) between those who cancelled and those who did not cancel. Thereofore, we decide not to use the Naive Bayes model, for it assumes independency among all predictors.
 
 ##### Method 3: Random Forest
 
 > Because of the heavily imbalanced data, we decide to put more weight on the cancelled data; the result is shown in the above confusion matrix. 
 
-```{r message=FALSE, warning=FALSE cache=TRUE}
+```{r message=FALSE, warning=FALSE, cache=TRUE}
 ltv.rf = randomForest(cancelled ~ .,data=ltv.train, classwt = c(1,20),importance=TRUE)
 pred = predict(ltv.rf, ltv.test)
 confusionMatrix(pred, ltv.test$cancelled)
 ```
->The model has an accuracy rate of 92.87% and a sensitivity of 94.93%. It is a good model that we should pursue. 
+
+> The model has an accuracy rate of 92.87% and a sensitivity of 94.93%. It is a good model that we should pursue. 
+
+#### Summary
+
+> Based on our findings, we conclude that using the Random Forest model to predict the user's churn rate (attrition) for the next month given user's prior behavior (pages visited, time spent browsing, number of entered orders, number of completed orders, how many holidays have happened during this user's subscription time, and the user's gender) is ideal. Even when the data is imbalanced, we can still get a good model estimate by putting different weights on the observations that can be categorized as "cancelled" and "not cancelled". However, in general, when facing such an imbalanced data set, a number of other methods can also be used to achieve better model fit, such as undersampling, oversampling and maybe even applying cost-sensitive tree pruning techniques.
 
 ### Task 2: Lifetime Value of A customer
-#### Pre-processing the Data
-
-> In order to predict the lifetime value of a customer, we have to first group the dataset by customer id, because we are now investigating the behavior of individual customers. We are now trying to predict how long the customer would keep the subscription alive if we have the record of this user's behavior over one month. 
+#### Data Exploration: Pre-processing the Data
+##### Scope
+> In order to predict the lifetime value of a customer, we have to first group the dataset by customer id, because we are now investigating the behavior of individual customers. We are now trying to predict how long the customer would keep the subscription alive if we have the record of this user's behavior over one month. These behaviors include: pages visited per month, onsite time per month, number of orders entered per month, number of order completion per month, the occurance of holiday per month, and the user's gender, the number of months between the user's most recent use and the end of the time frame (2014-12-31), and the frequency of the user's visits to the website. 
 
 ```{r}
 df2 <- ltv 
@@ -151,7 +164,7 @@ df2 <- df2 %>%
   group_by(id,gender) %>% 
   dplyr::summarize(page.m = sum(pages)/max(t.month), onsite.m = sum(onsite)/max(t.month), enter.m = sum(entered)/max(t.month), completed.m = sum(completed)/max(t.month), holiday.m = sum(holiday)/max(t.month), duration = max(t.month), recency = max(recency), frequency = n())
 ```
-#### Examination of Correlation
+##### Visualization: Examination of Correlation
 
 > Before building a model, we want to examine the correlation between our predictors
 
@@ -171,9 +184,10 @@ panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
 # Use panel.cor to display correlations in lower panel.
 pairs(df2[,ltv.var.names], lower.panel = panel.cor)
 ```
+
 > From the graph we can see some positive correlation between `page.m`, `onsite.m`,`enter.m` and `completed.m`, which makes sense. If a user browses a lot of pages, then he/she must have spent more time on the website and have a higher enter rate and completion rate.
 
-#### Best Subset Selection
+#### Data Analysis: Best Subset Selection
 ```{r message=FALSE, warning=FALSE}
 #First split the dataset into a training set and a test set
 data(df2)
@@ -220,7 +234,7 @@ summary(ltv.forward.subset)
 ```
 > Using BIC criteria we have identified 7 predictors that we will include in our GAM model below
 
-#### Building the GAM Model
+#### Data Analysis: Building the GAM Model
 ##### Prepping the Data
 > Here we include two functions that we use to fit the models between each of the 7 predictors and the outcome. Adapted from Homework 2
 
@@ -370,140 +384,16 @@ cv.mnth <- smoothCV(x = df2$frequency, y = df2$duration, df.min = 1, df.max = 10
 plot.frequency = plot.smoothCV(cv.mnth, K = 10, title.text = "CV Error: duration ~ frequency")
 ```
 
-##### Final GAM Model
+##### Final GAM Model: Validation and Metrics
 ```{r}
 gam.fit = gam(duration~bs(page.m,6)+bs(enter.m,6)+bs(completed.m,6)+s(holiday.m,5)+bs(recency,4)+poly(frequency,4)+gender,data=ltv.train)
 gam.pred = predict(gam.fit,ltv.test)
 mean((gam.pred-ltv.test$duration)^2)
 summary(gam.fit)
 ```
-> Our final model has the MSE of 6.58, which means that our model's prediction error would be well within 3 month's of a user's lifetime value. Given that this website has a prescription model of 1$ per month, we think that this is a reasonable error and this is a good model to use. 
+> Our final model has the Mean Squared Error of 6.58, which means that our model's prediction error would be well within 3 month's of a user's lifetime value. Given that this website has a prescription model of 1$ per month, we think that this is a reasonable error and this is a good model to use. 
+
+#### Summary
+> In the original dataset `ltv.csv`, there are only 9 columns, and after cleaning the data, we have concluded that there are only 7 predictors from the data set that we can use into building a model in predicting the customer's lifetime value. Overall if we were to use MSE as the metric for model performance, then we can safely say that using a General Additive Model, the error estimate for a customer's lifetime value would be within 3 months and it can serve as a useful tool if we were only given a user's monthly data. 
 
 ### Task 3: Customer Segmentation Scheme
-
-#### Processing and Methods
-```{r}
-df5 <- ltv 
-df5$date <- ymd(df5$date)
-
-df5 <- df5 %>%
-  group_by(id) %>% 
-  dplyr::mutate(duration = ifelse(date == min(date), 1, ifelse(status==2, ceiling((((date) - min(date))/30)), ceiling((as.Date("2014-12-31") - min(date))/30))), recency = round((as.Date("2014-12-31")-max(date))/30, digits = 1))
-
-# Filter down to customer whose status =1
-rmf <- df5 %>% 
-  filter(row_number()==n()) %>% 
-  filter(status==1) %>% 
-  dplyr::select(id,duration,recency) 
-
-```
-
-> First we create 2 new variables in the data frame. `duration` measures how many months a customer matains status==1 in the system, and `recency` meausres how many days since a user last logged in. Since our task is to develop a customer segmentation scheme, we can choose to filter out those who have already cancelled their accounts.
-
-#### Validation and Metrics
-##### **Method 1: K-means**
-
-```{r}
-#Method 1: K-means
-
-# Standardize variables to have mean zero and standard deviation one.
-rmf$duration=as.numeric(rmf$duration)
-rmf$recency=as.numeric(rmf$recency)
-rmf<- as_tibble(rmf)
-rmf.scale <- rmf[-1] %>% as.matrix %>% scale
-
-set.seed(1234)
-# Determine optimal clusters
-fviz_nbclust(rmf.scale, kmeans, method = "wss")
-fviz_nbclust(rmf.scale, kmeans, method = "silhouette")
-```
-
-> The total within-cluster sum of square (wss) measures the compactness of the clustering and we want it to be as small as possible.The results suggest that 10 is the optimal number of clusters as it appears to be the bend in the knee, but the improvement by adding more number of clusters is not that significant after the third cluster. Besides, the average silhouette approach measures the quality of a clustering. A high average silhouette width indicates a good clustering. The results show that 3 clusters maximize the average silhouette values. Therefore, we decide to go with 3 clusters in k-means.
-
-```{r}
-set.seed(1234)
-km.out =kmeans (rmf.scale,3, nstart =20)
-plot(rmf.scale, col=(km.out$cluster+1), main="K-Means Clustering Results with K=3", xlab="Duration", ylab="Recency", pch=20, cex=2)
-
-rmf.scale %>%
-  as_tibble() %>%
-  mutate(cluster = km.out$cluster, id = rmf$id) %>%
-  ggplot(aes(duration, recency, color = factor(cluster), label = id)) +
-  geom_text()
-
-# Unscale k-means' centers
-scale.scale = as.data.frame(attr(rmf.scale,'scaled:scale'))
-scale.center = as.data.frame(attr(rmf.scale,'scaled:center'))
-center.unscale = as.data.frame(km.out$centers)
-center.unscale$unsl.duration = (center.unscale$duration)*scale.scale[1, ] + scale.center[1, ]
-center.unscale$unsl.recency = (center.unscale$recency)*scale.scale[2, ] + scale.center[2, ]
-kable(center.unscale, caption = "Cluster Centers")
-kable(km.out$size, caption = "Cluster Size")
-```
-
-> The plots above show the results of our k-means clustering: cluster 1 includes cutomers who have an average of 9 months duration and 0.5 month recency; cluster 2 includes customers who have an average of 33 months duration and 1 month recency; cluster 3 includes customers who have an average of 37 monts duration and 18 months recency. Therefore, we can identify people in cluster 3 as sleeping customers, while people in cluster 1 as active new customers, and people in cluster 2 as long-term loyal customers. But we can also see the limits by performing k-means clustering: customers with who are on the boundary of cluster 2 are classified in cluster 3. This is due to K-means struggles when the clusters have different densities; in this problem sleeping customers are not majority, and there are only 145 customers being assgined to cluster 3.
-
-##### **Method 2: Hierarchical clustering**
-```{r}
-#Method 2: Hierarchical clustering
-hc.complete <- hclust(dist(rmf.scale), method="complete")
-hc.average <- hclust(dist(rmf.scale), method="average")
-hc.single <- hclust(dist(rmf.scale), method="single")
-```
-
-
-```{r}
-# Plot 
-par(mfrow = c(1,3))
-plot(rmf.scale, col=(cutree(hc.complete, 3)+1), main="Complete linkage clustering with K=3", xlab="", ylab="", pch=20, cex=0.5)
-plot(rmf.scale, col=(cutree(hc.average, 3)+1), main="Average linkage clustering with K=3", xlab="", ylab="", pch=20, cex=0.5)
-plot(rmf.scale, col=(cutree(hc.single, 3)+1), main="Single linkage clustering with K=3", xlab="", ylab="", pch=20, cex=0.5)
-
-sub.single <- cutree(hc.single, k = 3)
-kable(table(sub.single))
-```
-
-> By setting numbers of groups = 3, hierarchical clustering using complete linkage yields similar ouputs as k-means clustering. Due to the fact that single linkage records the smallest of pairwise dissimilarities, it only assigns 4 observations in class 3 and 1 observation in class 1.
-
-```{r}
-sub.complete <- cutree(hc.complete, k = 2)
-sub.average <- cutree(hc.average, k = 2)
-
-par(mfrow = c(1,2))
-fviz_cluster(list(data = rmf.scale, cluster = sub.complete))
-fviz_cluster(list(data = rmf.scale, cluster = sub.average))
-```
-
-> By setting numbers of groups = 2, hierarchical clustering using complete linkage and average linkage yields similar ouputs. About 80 out of 3681 customers are now classified as sleeping customers, with an average of 37 monts duration and 16 months recency. 
-
-
-```{r}
-dend <- as.dendrogram(hc.complete)
-
-# Set colours for heatmap, 25 increments
-my_palette <- colorRampPalette(brewer.pal(9, "GnBu"))(100)
-
-# Plot heatmap with heatmap.2
-par(cex.main=0.75) 
-gplots::heatmap.2(rmf.scale,                  
-          dendrogram = "row",
-          Colv="NA",     
-          Rowv=dend,    
-          trace="none",              
-          margins =c(5,0.1), 
-          density.info = "density",
-          col = my_palette,          
-          cexRow=0.5,cexCol=0.75)   
-```
-
-> From the heatmap (using complete linkage) we can compare differences for each customer and between duration and recency in a single plot. The color in the heatmap indicates the value of each varialbe (from light green to dark blue). We don't see much variation across individuals in this data set, but we can clearly tell that a small proportion of individuals with high duration and high recency; those are the people we identify as sleeping customers.
-
-
-
-> reference: http://uc-r.github.io/hc_clustering 
-https://uc-r.github.io/kmeans_clustering
-https://cran.r-project.org/web/packages/dendextend/vignettes/Cluster_Analysis.html 
-
-
-
-
